@@ -1,0 +1,62 @@
+name: Build LeviLamina client mod
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build-client:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: xmake-io/github-action-setup-xmake@v1
+
+      - uses: ZhongRuoyu/setup-llvm@v0
+        with:
+          llvm-version: 22
+
+      - name: Build and package
+        shell: pwsh
+        run: |
+          $projectFile = Get-ChildItem -Path . -Filter 'xmake.lua' -File -Recurse | Select-Object -First 1
+          if (-not $projectFile) { throw 'xmake.lua が見つかりません。' }
+
+          Push-Location $projectFile.Directory.FullName
+          try {
+            Copy-Item manifest.json.in manifest.json
+
+            & xmake repo -u
+            if ($LASTEXITCODE -ne 0) { throw '依存関係の取得に失敗しました。' }
+
+            & xmake f -c -y -p windows -a x64 -m release --target_type=client
+            if ($LASTEXITCODE -ne 0) { throw 'ビルド設定に失敗しました。' }
+
+            & xmake -v -y
+            if ($LASTEXITCODE -ne 0) { throw 'DLLのビルドに失敗しました。' }
+
+            $manifests = @(Get-ChildItem -Path 'bin' -Filter 'manifest.json' -File -Recurse)
+            if ($manifests.Count -ne 1) { throw "manifest.json が1つ見つかりません。検出数: $($manifests.Count)" }
+
+            $manifestPath = $manifests[0].FullName
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            if ($manifest.type -ne 'native' -or $manifest.platform -ne 'client') { throw 'クライアント用manifestではありません。' }
+
+            $dllPath = Join-Path (Split-Path -Parent $manifestPath) $manifest.entry
+            if (-not (Test-Path -LiteralPath $dllPath -PathType Leaf)) { throw "entryのDLLがありません: $dllPath" }
+
+            $stage = Join-Path $env:RUNNER_TEMP 'bigglobe-package'
+            New-Item -ItemType Directory -Path $stage -Force | Out-Null
+            Copy-Item -LiteralPath $manifestPath -Destination $stage
+            Copy-Item -LiteralPath $dllPath -Destination $stage
+            Compress-Archive -Path (Join-Path $stage '*') -DestinationPath (Join-Path $env:GITHUB_WORKSPACE 'BigGlobe_Port_Client_26.20.x_Windows_x64.zip') -Force
+          }
+          finally {
+            Pop-Location
+          }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: BigGlobe_Port_Client_26.20.x_Windows_x64
+          path: BigGlobe_Port_Client_26.20.x_Windows_x64.zip
+          if-no-files-found: error
